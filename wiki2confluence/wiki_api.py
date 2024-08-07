@@ -21,7 +21,10 @@ class WikiAPI:
                 print(f"Error fetching content: {data['error']['info']}")
                 return None
             
-            return data['parse']['wikitext']['*']
+            wiki_content = data['parse']['wikitext']['*']
+            #print("Raw wiki content:")
+            #print(wiki_content)  # Print first 500 characters
+            return wiki_content
         except requests.RequestException as e:
             print(f"Error fetching wiki content: {e}")
             return None
@@ -38,6 +41,8 @@ class WikiAPI:
             response = requests.post(self.api_url, data=params, verify=False)
             response.raise_for_status()
             html_content = response.json()['parse']['text']['*']
+            #print("Converted HTML content:")
+            #print(html_content)  # Print first 500 characters
             return html_content
         except requests.RequestException as e:
             print(f"Error converting wiki to HTML: {e}")

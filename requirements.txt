@@ -4,3 +4,4 @@ atlassian-python-api
 argparse
 html2text
 pyyaml
+beautifulsoup4
