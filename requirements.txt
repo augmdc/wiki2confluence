@@ -1,0 +1,6 @@
+requests
+markdown2
+atlassian-python-api
+argparse
+html2text
+pyyaml
