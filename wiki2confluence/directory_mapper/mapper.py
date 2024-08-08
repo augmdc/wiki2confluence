@@ -1,63 +1,85 @@
 import requests
+import logging
 from .models import WikiStructure, WikiPage
-from wiki_api import WikiAPI
 
 class DirectoryMapper:
     def __init__(self, api_url, verify_ssl=True):
         self.api_url = api_url
         self.verify_ssl = verify_ssl
         self.structure = WikiStructure()
-        self.wiki_api = WikiAPI(api_url, verify_ssl=verify_ssl)
+        self.session = requests.Session()
+        if not verify_ssl:
+            requests.packages.urllib3.disable_warnings()
+        self.logger = logging.getLogger(__name__)
 
-    def map_wiki_structure(self, start_page="Main Page"):
+    def map_wiki_structure(self):
         """
-        Map the entire wiki structure starting from the given page.
+        Map the entire wiki structure by fetching all pages.
         """
-        visited = set()
-        self._map_page(start_page, visited)
+        all_pages = self._get_all_pages()
+        for page_title in all_pages:
+            try:
+                self._add_page_to_structure(page_title)
+            except Exception as e:
+                self.logger.error(f"Failed to add page {page_title} to structure: {str(e)}")
         return self.structure
 
-    def _map_page(self, page_title, visited, parent=None):
+    def _get_all_pages(self):
         """
-        Recursively map a page and its subpages.
+        Fetch all pages from the MediaWiki API.
         """
-        if page_title in visited:
-            return
+        all_pages = []
+        continue_param = ''
+        while True:
+            params = {
+                "action": "query",
+                "list": "allpages",
+                "apfrom": continue_param,
+                "aplimit": "max",
+                "format": "json"
+            }
+            try:
+                response = self.session.get(self.api_url, params=params, verify=self.verify_ssl)
+                response.raise_for_status()
+                data = response.json()
+                
+                for page in data['query']['allpages']:
+                    all_pages.append(page['title'])
+                
+                if 'continue' in data:
+                    continue_param = data['continue']['apcontinue']
+                else:
+                    break
+            except requests.RequestException as e:
+                self.logger.error(f"Error fetching all pages: {e}")
+                break
+        return all_pages
 
-        visited.add(page_title)
-        page_info = self._get_page_info(page_title)
-
-        if not page_info:
-            return
-
-        current_page = WikiPage(title=page_title, content=page_info['content'])
-        self.structure.add_page(current_page, parent)
-
-        for subpage in page_info['subpages']:
-            self._map_page(subpage, visited, current_page)
-
-    def _get_page_info(self, page_title):
+    def _add_page_to_structure(self, page_title):
         """
-        Fetch page information from the MediaWiki API.
+        Add a page to the wiki structure.
         """
-        params = {
-            "action": "query",
-            "titles": page_title,
-            "prop": "revisions|links",
-            "rvprop": "content",
-            "format": "json"
-        }
+        if self.structure.get_page(page_title):
+            return  # Page already exists in structure
 
-        try:
-            response = requests.get(self.api_url, params=params, verify=self.verify_ssl)
-            response.raise_for_status()
-            data = response.json()
+        page = WikiPage(title=page_title)
+        parent_title = self._find_parent_title(page_title)
+        
+        if parent_title:
+            parent_page = self.structure.get_page(parent_title)
+            if not parent_page:
+                parent_page = self._add_page_to_structure(parent_title)
+            self.structure.add_page(page, parent_page)
+        else:
+            self.structure.add_page(page)
+        
+        return page
 
-            page = next(iter(data['query']['pages'].values()))
-            content = page['revisions'][0]['*'] if 'revisions' in page else ""
-            subpages = [link['title'] for link in page.get('links', []) if 'title' in link]
-
-            return {'content': content, 'subpages': subpages}
-        except requests.RequestException as e:
-            print(f"Error fetching page info: {e}")
-            return None
+    def _find_parent_title(self, page_title):
+        """
+        Find the parent title of a given page based on its title structure.
+        """
+        parts = page_title.split('/')
+        if len(parts) > 1:
+            return '/'.join(parts[:-1])
+        return None
