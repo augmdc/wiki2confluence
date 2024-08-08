@@ -2,6 +2,7 @@ import yaml
 import os
 import sys
 import logging
+import argparse
 from directory_mapper.wiki_page_collector import WikiPageCollector
 from wiki_api import WikiAPI
 from wiki_converter import WikiConverter
@@ -20,13 +21,13 @@ def load_config():
         logger.error(f"Failed to load config: {e}")
         raise
 
-def process_page(wiki_api, confluence_api, page_title, config, parent_id):
+def process_page(wiki_api, confluence_api, page_title, config, parent_id, dry_run=False):
     try:
         normalized_title = wiki_api.normalize_title(page_title)
         
         wiki_content = wiki_api.get_wiki_content(normalized_title)
         if wiki_content == "":
-            logger.info(f"Page '{normalized_title}' is empty or not found. Creating new page with placeholder content.")
+            logger.info(f"Page '{normalized_title}' is empty or not found. Would create new page with placeholder content.")
             wiki_content = f"# {page_title}\n\nThis page is currently empty or was not found in the original wiki."
 
         html_content = wiki_api.convert_to_html(wiki_content)
@@ -41,16 +42,20 @@ def process_page(wiki_api, confluence_api, page_title, config, parent_id):
 
         confluence_title = normalized_title.replace('_', ' ')
 
-        page_id = confluence_api.create_or_update_page(
-            space=config['confluence']['space_key'],
-            title=confluence_title,
-            body=markdown_content,
-            parent_id=parent_id
-        )
-        
-        if not page_id:
-            logger.error(f"Failed to upload page to Confluence: {confluence_title}")
-            return False
+        if dry_run:
+            logger.info(f"[DRY RUN] Would create/update page: {confluence_title}")
+            logger.info(f"[DRY RUN] Content preview (first 100 characters): {markdown_content[:100]}...")
+        else:
+            page_id = confluence_api.create_or_update_page(
+                space=config['confluence']['space_key'],
+                title=confluence_title,
+                body=markdown_content,
+                parent_id=parent_id
+            )
+            
+            if not page_id:
+                logger.error(f"Failed to upload page to Confluence: {confluence_title}")
+                return False
 
         logger.info(f"Successfully processed page: {confluence_title}")
         return True
@@ -59,6 +64,11 @@ def process_page(wiki_api, confluence_api, page_title, config, parent_id):
         return False
 
 def main():
+    parser = argparse.ArgumentParser(description="Wiki to Confluence Migration Tool")
+    parser.add_argument("--single-page", help="Process a single page by title", default=None)
+    parser.add_argument("--dry-run", action="store_true", help="Perform a dry run without creating Confluence pages")
+    args = parser.parse_args()
+
     try:
         config = load_config()
         
@@ -84,29 +94,39 @@ def main():
         
         wiki_page_id = config['confluence']['parent_page_id']
 
-        # Verify the existence of the parent Wiki folder
-        if not confluence_api.verify_page_exists(wiki_page_id):
-            logger.error(f"Parent Wiki folder with ID {wiki_page_id} not found in Confluence. Please check your configuration.")
-            sys.exit(1)
+        if not args.dry_run:
+            # Verify the existence of the parent Wiki folder
+            if not confluence_api.verify_page_exists(wiki_page_id):
+                logger.error(f"Parent Wiki folder with ID {wiki_page_id} not found in Confluence. Please check your configuration.")
+                sys.exit(1)
 
-        # Collect all pages, including empty ones
-        all_pages = page_collector.collect_all_pages()
-        
-        # Log the total number of pages
-        logger.info(f"Total number of pages to process: {len(all_pages)}")
-        
-        # Process all pages
-        for page_title in all_pages:
-            success = process_page(wiki_api, confluence_api, page_title, config, wiki_page_id)
-            if not success:
-                page_collector.add_unprocessed_page(page_title)
+        if args.dry_run:
+            logger.info("Running in DRY RUN mode. No pages will be created or updated in Confluence.")
 
-        # Save the list of pages to a text file, including unprocessed pages
-        page_collector.save_pages_to_file(all_pages, "wiki_pages.txt")
+        if args.single_page:
+            # Process a single page
+            success = process_page(wiki_api, confluence_api, args.single_page, config, wiki_page_id, args.dry_run)
+            if success:
+                logger.info(f"Successfully processed page: {args.single_page}")
+            else:
+                logger.error(f"Failed to process page: {args.single_page}")
+        else:
+            # Process all pages
+            all_pages = page_collector.collect_all_pages()
+            logger.info(f"Total number of pages to process: {len(all_pages)}")
+            
+            for page_title in all_pages:
+                success = process_page(wiki_api, confluence_api, page_title, config, wiki_page_id, args.dry_run)
+                if not success:
+                    page_collector.add_unprocessed_page(page_title)
 
-        logger.info(f"Wiki migration completed. Total pages processed: {len(all_pages) - len(page_collector.unprocessed_pages)}")
-        if page_collector.unprocessed_pages:
-            logger.info(f"Number of unprocessed pages: {len(page_collector.unprocessed_pages)}")
+            # Save the list of pages to a text file, including unprocessed pages
+            page_collector.save_pages_to_file(all_pages, "wiki_pages.txt")
+
+            logger.info(f"Wiki migration {'simulation' if args.dry_run else 'process'} completed.")
+            logger.info(f"Total pages processed: {len(all_pages) - len(page_collector.unprocessed_pages)}")
+            if page_collector.unprocessed_pages:
+                logger.info(f"Number of unprocessed pages: {len(page_collector.unprocessed_pages)}")
 
     except Exception as e:
         logger.error(f"An error occurred during migration: {str(e)}")

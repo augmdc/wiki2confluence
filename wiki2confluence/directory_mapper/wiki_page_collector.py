@@ -19,8 +19,7 @@ class WikiPageCollector:
         """
         Collect all pages from the wiki, including empty ones.
         """
-        all_pages = self._get_all_pages()
-        return all_pages
+        return self._get_all_pages()
 
     def _get_all_pages(self):
         """
@@ -59,28 +58,12 @@ class WikiPageCollector:
         """
         try:
             with open(filename, 'w', encoding='utf-8') as f:
-                f.write("Processed Pages:\n")
+                f.write("All Wiki Pages:\n")
                 for page in pages:
-                    if page not in self.unprocessed_pages:
-                        f.write(f"{page}\n")
+                    f.write(f"{page}\n")
                 
                 f.write(f"\nTotal number of pages: {len(pages)}\n")
-                f.write(f"Number of processed pages: {len(pages) - len(self.unprocessed_pages)}\n")
                 
-                if self.unprocessed_pages:
-                    f.write("\nUnprocessed Pages:\n")
-                    for page in self.unprocessed_pages:
-                        f.write(f"{page}\n")
-                    f.write(f"\nNumber of unprocessed pages: {len(self.unprocessed_pages)}\n")
-                else:
-                    f.write("\nAll pages were processed successfully.\n")
-                
-            self.logger.info(f"Page list saved to {filename} with page count and unprocessed pages")
+            self.logger.info(f"Page list saved to {filename} with page count")
         except IOError as e:
             self.logger.error(f"Error saving page list to file: {e}")
-
-    def add_unprocessed_page(self, page_title):
-        """
-        Add a page to the list of unprocessed pages.
-        """
-        self.unprocessed_pages.append(page_title)
