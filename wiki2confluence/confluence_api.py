@@ -4,6 +4,7 @@ from functools import lru_cache
 import logging
 import time
 import threading
+import io
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.ERROR)
@@ -115,4 +116,24 @@ class ConfluenceAPI:
             return page is not None
         except Exception as e:
             logger.error(f"Error verifying page with ID '{page_id}': {e}")
+            return False
+
+    def upload_attachment(self, page_id, file_name, file_content):
+        """
+        Upload an attachment to a Confluence page.
+        """
+        self.rate_limit_request()
+        try:
+            attachment = io.BytesIO(file_content)
+            self.confluence.attach_file(
+                content=attachment,
+                name=file_name,
+                page_id=page_id,
+                content_type=None,  # Let Confluence determine the content type
+                comment="Uploaded during wiki migration"
+            )
+            logger.info(f"Successfully uploaded attachment '{file_name}' to page ID {page_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Error uploading attachment '{file_name}' to page ID {page_id}: {e}")
             return False

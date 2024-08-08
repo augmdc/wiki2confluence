@@ -4,11 +4,12 @@ import os
 import sys
 import logging
 import argparse
+from tqdm import tqdm
+from tenacity import retry, stop_after_attempt, wait_exponential
 from directory_mapper.wiki_page_collector import WikiPageCollector
 from wiki_api import WikiAPI
 from wiki_converter import WikiConverter
 from confluence_api import ConfluenceAPI
-from tqdm import tqdm
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -23,7 +24,8 @@ def load_config():
         logger.error(f"Failed to load config: {e}")
         raise
 
-def process_page(wiki_api, confluence_api, page_title, config, parent_id, dry_run=False):
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+def process_page_with_retry(wiki_api, confluence_api, page_title, config, parent_id, dry_run=False):
     try:
         normalized_title = wiki_api.normalize_title(page_title)
         
@@ -59,6 +61,14 @@ def process_page(wiki_api, confluence_api, page_title, config, parent_id, dry_ru
                 logger.error(f"Failed to upload page to Confluence: {confluence_title}")
                 return False
 
+            # Handle attachments
+            attachments = wiki_api.get_page_attachments(page_title)
+            for attachment in attachments:
+                file_name = attachment['title']
+                file_content = wiki_api.download_attachment(file_name)
+                if file_content:
+                    confluence_api.upload_attachment(page_id, file_name, file_content)
+
         logger.info(f"Successfully processed page: {confluence_title}")
         return True
     except Exception as e:
@@ -67,7 +77,7 @@ def process_page(wiki_api, confluence_api, page_title, config, parent_id, dry_ru
 
 def process_page_concurrent(args):
     wiki_api, confluence_api, page_title, config, parent_id, dry_run = args
-    return process_page(wiki_api, confluence_api, page_title, config, parent_id, dry_run)
+    return process_page_with_retry(wiki_api, confluence_api, page_title, config, parent_id, dry_run)
 
 def main():
     parser = argparse.ArgumentParser(description="Wiki to Confluence Migration Tool")
@@ -110,7 +120,7 @@ def main():
             logger.info("Running in DRY RUN mode. No pages will be created or updated in Confluence.")
 
         if args.single_page:
-            success = process_page(wiki_api, confluence_api, args.single_page, config, wiki_page_id, args.dry_run)
+            success = process_page_with_retry(wiki_api, confluence_api, args.single_page, config, wiki_page_id, args.dry_run)
             if success:
                 logger.info(f"Successfully processed page: {args.single_page}")
             else:
@@ -125,7 +135,7 @@ def main():
                                            (wiki_api, confluence_api, page_title, config, wiki_page_id, args.dry_run)) 
                            for page_title in all_pages]
                 
-                for future in concurrent.futures.as_completed(futures):
+                for future in tqdm(concurrent.futures.as_completed(futures), total=len(all_pages), desc="Processing pages"):
                     page_title = all_pages[futures.index(future)]
                     try:
                         success = future.result()

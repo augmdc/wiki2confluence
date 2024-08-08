@@ -86,3 +86,46 @@ class WikiAPI:
     def is_page_empty(self, page_title):
         content = self.get_wiki_content(page_title)
         return content.strip() == ""
+
+    def get_page_attachments(self, page_title):
+        params = {
+            "action": "query",
+            "titles": page_title,
+            "prop": "images",
+            "imlimit": "max",
+            "format": "json"
+        }
+        try:
+            response = self.session.get(self.api_url, params=params, verify=self.verify_ssl)
+            response.raise_for_status()
+            data = response.json()
+            page = next(iter(data['query']['pages'].values()))
+            return page.get('images', [])
+        except Exception as e:
+            logger.error(f"Error fetching attachments for page '{page_title}': {e}")
+            return []
+
+    def download_attachment(self, file_name):
+        params = {
+            "action": "query",
+            "titles": f"File:{file_name}",
+            "prop": "imageinfo",
+            "iiprop": "url",
+            "format": "json"
+        }
+        try:
+            response = self.session.get(self.api_url, params=params, verify=self.verify_ssl)
+            response.raise_for_status()
+            data = response.json()
+            page = next(iter(data['query']['pages'].values()))
+            if 'imageinfo' in page:
+                url = page['imageinfo'][0]['url']
+                response = self.session.get(url, verify=self.verify_ssl)
+                response.raise_for_status()
+                return response.content
+            else:
+                logger.warning(f"No image info found for file: {file_name}")
+                return None
+        except Exception as e:
+            logger.error(f"Error downloading attachment '{file_name}': {e}")
+            return None
