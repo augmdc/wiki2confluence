@@ -5,3 +5,4 @@ argparse
 html2text
 pyyaml
 beautifulsoup4
+tqdm

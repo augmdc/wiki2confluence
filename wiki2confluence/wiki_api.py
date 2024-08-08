@@ -2,6 +2,7 @@ import requests
 from functools import lru_cache
 import re
 import logging
+import threading
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -11,9 +12,15 @@ class WikiAPI:
         self.api_url = api_url
         self.wiki_url = wiki_url
         self.verify_ssl = verify_ssl
-        self.session = requests.Session()
+        self.local = threading.local()
         if not verify_ssl:
             requests.packages.urllib3.disable_warnings()
+
+    @property
+    def session(self):
+        if not hasattr(self.local, 'session'):
+            self.local.session = requests.Session()
+        return self.local.session
 
     @staticmethod
     def normalize_title(title):
@@ -58,7 +65,7 @@ class WikiAPI:
             logger.error(f"Unexpected API response structure for '{normalized_title}' from {self.wiki_url}: {e}")
         except Exception as e:
             logger.error(f"Unexpected error fetching wiki content for '{normalized_title}' from {self.wiki_url}: {e}")
-        return ""  # Return empty string instead of None
+        return ""
 
     def convert_to_html(self, wiki_content):
         params = {

@@ -3,20 +3,39 @@ import markdown2
 from functools import lru_cache
 import logging
 import time
+import threading
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.ERROR)
 
 class ConfluenceAPI:
     def __init__(self, url, username, api_token, rate_limit=2):
-        self.confluence = Confluence(
-            url=url,
-            username=username,
-            password=api_token,
-            cloud=True
-        )
+        self.url = url
+        self.username = username
+        self.api_token = api_token
         self.rate_limit = rate_limit
-        self.last_request_time = 0
+        self.local = threading.local()
+
+    @property
+    def confluence(self):
+        if not hasattr(self.local, 'confluence'):
+            self.local.confluence = Confluence(
+                url=self.url,
+                username=self.username,
+                password=self.api_token,
+                cloud=True
+            )
+        return self.local.confluence
+
+    @property
+    def last_request_time(self):
+        if not hasattr(self.local, 'last_request_time'):
+            self.local.last_request_time = 0
+        return self.local.last_request_time
+
+    @last_request_time.setter
+    def last_request_time(self, value):
+        self.local.last_request_time = value
 
     def rate_limit_request(self):
         current_time = time.time()

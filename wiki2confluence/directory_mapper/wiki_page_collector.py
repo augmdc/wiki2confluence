@@ -64,6 +64,18 @@ class WikiPageCollector:
                 
                 f.write(f"\nTotal number of pages: {len(pages)}\n")
                 
-            self.logger.info(f"Page list saved to {filename} with page count")
+                if self.unprocessed_pages:
+                    f.write("\nUnprocessed Pages:\n")
+                    for page in self.unprocessed_pages:
+                        f.write(f"{page}\n")
+                    f.write(f"\nTotal number of unprocessed pages: {len(self.unprocessed_pages)}\n")
+                
+            self.logger.info(f"Page list saved to {filename} with page count and unprocessed pages")
         except IOError as e:
             self.logger.error(f"Error saving page list to file: {e}")
+
+    def add_unprocessed_page(self, page_title):
+        """
+        Add a page to the list of unprocessed pages.
+        """
+        self.unprocessed_pages.append(page_title)
