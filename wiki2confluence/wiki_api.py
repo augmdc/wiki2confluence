@@ -3,6 +3,8 @@ from functools import lru_cache
 import re
 import logging
 import threading
+from bs4 import BeautifulSoup
+import urllib.parse
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -87,11 +89,11 @@ class WikiAPI:
         content = self.get_wiki_content(page_title)
         return content.strip() == ""
 
-    def get_page_attachments(self, page_title):
+    def get_page_images(self, page_title):
         params = {
             "action": "query",
-            "titles": page_title,
             "prop": "images",
+            "titles": page_title,
             "imlimit": "max",
             "format": "json"
         }
@@ -100,17 +102,24 @@ class WikiAPI:
             response.raise_for_status()
             data = response.json()
             page = next(iter(data['query']['pages'].values()))
-            return page.get('images', [])
+            images = page.get('images', [])
+            
+            image_info = []
+            for image in images:
+                image_title = image['title']
+                image_info.append(self.get_image_info(image_title))
+            
+            return image_info
         except Exception as e:
-            logger.error(f"Error fetching attachments for page '{page_title}': {e}")
+            logger.error(f"Error fetching images for page '{page_title}': {e}")
             return []
 
-    def download_attachment(self, file_name):
+    def get_image_info(self, image_title):
         params = {
             "action": "query",
-            "titles": f"File:{file_name}",
+            "titles": image_title,
             "prop": "imageinfo",
-            "iiprop": "url",
+            "iiprop": "url|size|mime",
             "format": "json"
         }
         try:
@@ -119,13 +128,86 @@ class WikiAPI:
             data = response.json()
             page = next(iter(data['query']['pages'].values()))
             if 'imageinfo' in page:
-                url = page['imageinfo'][0]['url']
-                response = self.session.get(url, verify=self.verify_ssl)
-                response.raise_for_status()
-                return response.content
-            else:
-                logger.warning(f"No image info found for file: {file_name}")
-                return None
-        except Exception as e:
-            logger.error(f"Error downloading attachment '{file_name}': {e}")
+                info = page['imageinfo'][0]
+                return {
+                    'title': image_title,
+                    'url': info['url'],
+                    'size': info['size'],
+                    'mime': info['mime']
+                }
             return None
+        except Exception as e:
+            logger.error(f"Error fetching image info for '{image_title}': {e}")
+            return None
+
+    def download_image(self, image_url):
+        try:
+            response = self.session.get(image_url, verify=self.verify_ssl)
+            response.raise_for_status()
+            return response.content
+        except Exception as e:
+            logger.error(f"Error downloading image from '{image_url}': {e}")
+            return None
+
+    def get_images_from_html(self, page_title):
+        html_content = self.get_page_html(page_title)
+        if not html_content:
+            return []
+
+        soup = BeautifulSoup(html_content, 'html.parser')
+        images = []
+
+        for img in soup.find_all('img'):
+            src = img.get('src')
+            if src:
+                full_url = urllib.parse.urljoin(self.wiki_url, src)
+                images.append({
+                    'url': full_url,
+                    'alt': img.get('alt', ''),
+                    'title': img.get('title', '')
+                })
+
+        return images
+
+    def get_page_html(self, page_title):
+        params = {
+            "action": "parse",
+            "page": page_title,
+            "prop": "text",
+            "format": "json"
+        }
+        try:
+            response = self.session.get(self.api_url, params=params, verify=self.verify_ssl)
+            response.raise_for_status()
+            data = response.json()
+            return data['parse']['text']['*']
+        except Exception as e:
+            logger.error(f"Error fetching HTML for page '{page_title}': {e}")
+            return None
+
+    def get_all_images(self):
+        params = {
+            "action": "query",
+            "list": "allimages",
+            "ailimit": "max",
+            "aiprop": "url|size|mime",
+            "format": "json"
+        }
+        all_images = []
+        while True:
+            try:
+                response = self.session.get(self.api_url, params=params, verify=self.verify_ssl)
+                response.raise_for_status()
+                data = response.json()
+                
+                all_images.extend(data['query']['allimages'])
+                
+                if 'continue' in data:
+                    params['aicontinue'] = data['continue']['aicontinue']
+                else:
+                    break
+            except Exception as e:
+                logger.error(f"Error fetching all images: {e}")
+                break
+        
+        return all_images

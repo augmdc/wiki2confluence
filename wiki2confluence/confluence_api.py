@@ -5,9 +5,12 @@ import logging
 import time
 import threading
 import io
+import os
+import tempfile
+import mimetypes
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.ERROR)
+logger.setLevel(logging.INFO)
 
 class ConfluenceAPI:
     def __init__(self, url, username, api_token, rate_limit=2):
@@ -106,6 +109,23 @@ class ConfluenceAPI:
             logger.error(f"Error creating or updating Confluence page '{title}': {e}")
             return None
 
+    def update_page_content(self, page_id, title, body):
+        self.rate_limit_request()
+        try:
+            html_body = self.markdown_to_html(body)
+            page = self.confluence.update_page(
+                page_id=page_id,
+                title=title,
+                body=html_body,
+                type='page',
+                representation='storage'
+            )
+            logger.info(f"Updated page content for '{title}' (ID: {page['id']})")
+            return True
+        except Exception as e:
+            logger.error(f"Error updating page content for '{title}': {e}")
+            return False
+
     def verify_page_exists(self, page_id):
         """
         Verify if a page exists by its ID.
@@ -123,17 +143,54 @@ class ConfluenceAPI:
         Upload an attachment to a Confluence page.
         """
         self.rate_limit_request()
+        temp_file = None
         try:
-            attachment = io.BytesIO(file_content)
-            self.confluence.attach_file(
-                content=attachment,
+            # Create a temporary file
+            with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file_name)[1]) as temp_file:
+                temp_file.write(file_content)
+                temp_file_path = temp_file.name
+
+            # Determine the content type
+            content_type, _ = mimetypes.guess_type(file_name)
+            if content_type is None:
+                content_type = 'application/octet-stream'
+
+            # Upload the temporary file
+            attachment = self.confluence.attach_file(
+                filename=temp_file_path,
                 name=file_name,
                 page_id=page_id,
-                content_type=None,  # Let Confluence determine the content type
+                content_type=content_type,
                 comment="Uploaded during wiki migration"
             )
+            
+            # Log more details about the upload
             logger.info(f"Successfully uploaded attachment '{file_name}' to page ID {page_id}")
+            logger.info(f"Attachment details: {attachment}")
+            
+            # Verify the attachment
+            self.verify_attachment(page_id, file_name)
+            
             return True
         except Exception as e:
             logger.error(f"Error uploading attachment '{file_name}' to page ID {page_id}: {e}")
             return False
+        finally:
+            # Clean up the temporary file
+            if temp_file and os.path.exists(temp_file.name):
+                os.unlink(temp_file.name)
+
+    def verify_attachment(self, page_id, file_name):
+        """
+        Verify that the attachment was successfully uploaded and is accessible.
+        """
+        try:
+            attachments = self.confluence.get_attachments_from_content(page_id)
+            for attachment in attachments['results']:
+                if attachment['title'] == file_name:
+                    logger.info(f"Verified attachment '{file_name}' on page ID {page_id}")
+                    logger.info(f"Attachment URL: {attachment['_links']['download']}")
+                    return
+            logger.warning(f"Attachment '{file_name}' not found on page ID {page_id} after upload")
+        except Exception as e:
+            logger.error(f"Error verifying attachment '{file_name}' on page ID {page_id}: {e}")

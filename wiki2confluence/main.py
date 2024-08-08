@@ -25,7 +25,7 @@ def load_config():
         raise
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-def process_page_with_retry(wiki_api, confluence_api, page_title, config, parent_id, dry_run=False):
+def process_page(wiki_api, confluence_api, page_title, config, parent_id, dry_run=False):
     try:
         normalized_title = wiki_api.normalize_title(page_title)
         
@@ -50,6 +50,33 @@ def process_page_with_retry(wiki_api, confluence_api, page_title, config, parent
             logger.info(f"[DRY RUN] Would create/update page: {confluence_title}")
             logger.info(f"[DRY RUN] Content preview (first 100 characters): {markdown_content[:100]}...")
         else:
+            # Handle images before creating/updating the page
+            images = wiki_api.get_page_images(page_title)
+            if not images:
+                # If no images found, try alternative method
+                images = wiki_api.get_images_from_html(page_title)
+
+            uploaded_images = []
+            for image in images:
+                if image and 'url' in image:
+                    image_content = wiki_api.download_image(image['url'])
+                    if image_content:
+                        file_name = image.get('title', '').split(':')[-1]  # Remove 'File:' prefix if present
+                        if not file_name:
+                            file_name = image['url'].split('/')[-1]  # Use the last part of the URL as filename
+                        
+                        # Log image details
+                        logger.info(f"Downloading image: {file_name}")
+                        logger.info(f"Image size: {len(image_content)} bytes")
+                        logger.info(f"Image URL: {image['url']}")
+                        
+                        uploaded_images.append((file_name, image['url']))
+                    else:
+                        logger.warning(f"Failed to download image from URL: {image['url']}")
+                else:
+                    logger.warning(f"Invalid image data for page: {confluence_title}")
+
+            # Create or update the page with the original content first
             page_id = confluence_api.create_or_update_page(
                 space=config['confluence']['space_key'],
                 title=confluence_title,
@@ -61,13 +88,34 @@ def process_page_with_retry(wiki_api, confluence_api, page_title, config, parent
                 logger.error(f"Failed to upload page to Confluence: {confluence_title}")
                 return False
 
-            # Handle attachments
-            attachments = wiki_api.get_page_attachments(page_title)
-            for attachment in attachments:
-                file_name = attachment['title']
-                file_content = wiki_api.download_attachment(file_name)
-                if file_content:
-                    confluence_api.upload_attachment(page_id, file_name, file_content)
+            # Upload images as attachments
+            for file_name, original_url in uploaded_images:
+                image_content = wiki_api.download_image(original_url)
+                if image_content:
+                    upload_success = confluence_api.upload_attachment(page_id, file_name, image_content)
+                    if upload_success:
+                        logger.info(f"Successfully uploaded image: {file_name} to page: {confluence_title}")
+                        # Update markdown content with correct image references
+                        markdown_content = markdown_content.replace(
+                            f"![]({original_url})",
+                            f"![{file_name}](/wiki/download/attachments/{page_id}/{file_name})"
+                        )
+                    else:
+                        logger.warning(f"Failed to upload image: {file_name} to page: {confluence_title}")
+                else:
+                    logger.warning(f"Failed to download image from URL: {original_url}")
+
+            # Update the page again with the modified content including correct image references
+            if uploaded_images:
+                update_success = confluence_api.update_page_content(
+                    page_id=page_id,
+                    title=confluence_title,
+                    body=markdown_content
+                )
+                if update_success:
+                    logger.info(f"Successfully updated page content with image references: {confluence_title}")
+                else:
+                    logger.warning(f"Failed to update page content with image references: {confluence_title}")
 
         logger.info(f"Successfully processed page: {confluence_title}")
         return True
@@ -77,7 +125,7 @@ def process_page_with_retry(wiki_api, confluence_api, page_title, config, parent
 
 def process_page_concurrent(args):
     wiki_api, confluence_api, page_title, config, parent_id, dry_run = args
-    return process_page_with_retry(wiki_api, confluence_api, page_title, config, parent_id, dry_run)
+    return process_page(wiki_api, confluence_api, page_title, config, parent_id, dry_run)
 
 def main():
     parser = argparse.ArgumentParser(description="Wiki to Confluence Migration Tool")
@@ -120,7 +168,7 @@ def main():
             logger.info("Running in DRY RUN mode. No pages will be created or updated in Confluence.")
 
         if args.single_page:
-            success = process_page_with_retry(wiki_api, confluence_api, args.single_page, config, wiki_page_id, args.dry_run)
+            success = process_page(wiki_api, confluence_api, args.single_page, config, wiki_page_id, args.dry_run)
             if success:
                 logger.info(f"Successfully processed page: {args.single_page}")
             else:
