@@ -4,11 +4,12 @@ import re
 import logging
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.ERROR)
+logger.setLevel(logging.INFO)
 
 class WikiAPI:
-    def __init__(self, api_url, verify_ssl=True):
+    def __init__(self, api_url, wiki_url, verify_ssl=True):
         self.api_url = api_url
+        self.wiki_url = wiki_url
         self.verify_ssl = verify_ssl
         self.session = requests.Session()
         if not verify_ssl:
@@ -17,7 +18,7 @@ class WikiAPI:
     @staticmethod
     def normalize_title(title):
         # Convert spaces to underscores and remove any invalid characters
-        return re.sub(r'[^a-zA-Z0-9_]', '', title.replace(' ', '_'))
+        return re.sub(r'[^a-zA-Z0-9_./:;]', '', title.replace(' ', '_'))
 
     @lru_cache(maxsize=1000)
     def get_wiki_content(self, page_title):
@@ -38,30 +39,27 @@ class WikiAPI:
             
             pages = data['query'].get('pages', {})
             if not pages:
-                logger.error(f"No pages found for title: {normalized_title}")
-                return None
+                logger.info(f"No content found for page: {normalized_title}")
+                return ""
             
             page = next(iter(pages.values()))
             if 'missing' in page:
-                logger.error(f"Page '{normalized_title}' does not exist in the wiki")
-                return None
+                logger.info(f"Page '{normalized_title}' does not exist in the wiki. Creating new page.")
+                return ""
             
             if 'revisions' not in page:
-                logger.error(f"No revisions found for page: {normalized_title}")
-                return None
+                logger.info(f"No revisions found for page: {normalized_title}")
+                return ""
             
             return page['revisions'][0]['slots']['main']['*']
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Network error fetching wiki content for '{normalized_title}': {e}")
+        except requests.RequestException as e:
+            logger.error(f"Network error fetching wiki content for '{normalized_title}' from {self.wiki_url}: {e}")
         except KeyError as e:
-            logger.error(f"Unexpected API response structure for '{normalized_title}': {e}")
+            logger.error(f"Unexpected API response structure for '{normalized_title}' from {self.wiki_url}: {e}")
         except Exception as e:
-            logger.error(f"Unexpected error fetching wiki content for '{normalized_title}': {e}")
-        return None
+            logger.error(f"Unexpected error fetching wiki content for '{normalized_title}' from {self.wiki_url}: {e}")
+        return ""  # Return empty string instead of None
 
-    # ... (rest of the methods remain unchanged)
-
-    @lru_cache(maxsize=1000)
     def convert_to_html(self, wiki_content):
         params = {
             "action": "parse",
@@ -80,9 +78,4 @@ class WikiAPI:
 
     def is_page_empty(self, page_title):
         content = self.get_wiki_content(page_title)
-        if content is None:
-            return True
-        
-        # Remove whitespace and check if there's any content
-        cleaned_content = re.sub(r'\s+', '', content).strip()
-        return len(cleaned_content) == 0
+        return content.strip() == ""

@@ -3,26 +3,24 @@ import logging
 from wiki_api import WikiAPI
 
 class WikiPageCollector:
-    def __init__(self, api_url, verify_ssl=True):
+    def __init__(self, api_url, wiki_url, verify_ssl=True):
         self.api_url = api_url
+        self.wiki_url = wiki_url
         self.verify_ssl = verify_ssl
         self.session = requests.Session()
-        self.wiki_api = WikiAPI(api_url, verify_ssl)
+        self.wiki_api = WikiAPI(api_url, wiki_url, verify_ssl)
         if not verify_ssl:
             requests.packages.urllib3.disable_warnings()
         self.logger = logging.getLogger(__name__)
-        self.logger.setLevel(logging.ERROR)
+        self.logger.setLevel(logging.INFO)
+        self.unprocessed_pages = []
 
-    def collect_non_empty_pages(self):
+    def collect_all_pages(self):
         """
-        Collect all non-empty pages from the wiki.
+        Collect all pages from the wiki, including empty ones.
         """
         all_pages = self._get_all_pages()
-        non_empty_pages = []
-        for page_title in all_pages:
-            if not self.wiki_api.is_page_empty(page_title):
-                non_empty_pages.append(page_title)
-        return non_empty_pages
+        return all_pages
 
     def _get_all_pages(self):
         """
@@ -44,8 +42,7 @@ class WikiPageCollector:
                 data = response.json()
                 
                 for page in data['query']['allpages']:
-                    # Store the title with underscores
-                    all_pages.append(page['title'])
+                    all_pages.append(self.wiki_api.normalize_title(page['title']))
                 
                 if 'continue' in data:
                     continue_param = data['continue']['apcontinue']
@@ -58,13 +55,32 @@ class WikiPageCollector:
 
     def save_pages_to_file(self, pages, filename):
         """
-        Save the list of pages to a text file.
+        Save the list of pages to a text file, add a page count, and list unprocessed pages.
         """
         try:
             with open(filename, 'w', encoding='utf-8') as f:
+                f.write("Processed Pages:\n")
                 for page in pages:
-                    # Write the underscore version of the title
-                    f.write(f"{page}\n")
-            self.logger.info(f"Page list saved to {filename}")
+                    if page not in self.unprocessed_pages:
+                        f.write(f"{page}\n")
+                
+                f.write(f"\nTotal number of pages: {len(pages)}\n")
+                f.write(f"Number of processed pages: {len(pages) - len(self.unprocessed_pages)}\n")
+                
+                if self.unprocessed_pages:
+                    f.write("\nUnprocessed Pages:\n")
+                    for page in self.unprocessed_pages:
+                        f.write(f"{page}\n")
+                    f.write(f"\nNumber of unprocessed pages: {len(self.unprocessed_pages)}\n")
+                else:
+                    f.write("\nAll pages were processed successfully.\n")
+                
+            self.logger.info(f"Page list saved to {filename} with page count and unprocessed pages")
         except IOError as e:
             self.logger.error(f"Error saving page list to file: {e}")
+
+    def add_unprocessed_page(self, page_title):
+        """
+        Add a page to the list of unprocessed pages.
+        """
+        self.unprocessed_pages.append(page_title)

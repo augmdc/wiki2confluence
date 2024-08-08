@@ -22,13 +22,12 @@ def load_config():
 
 def process_page(wiki_api, confluence_api, page_title, config, parent_id):
     try:
-        # Use the same normalization method for consistency
         normalized_title = wiki_api.normalize_title(page_title)
         
         wiki_content = wiki_api.get_wiki_content(normalized_title)
-        if not wiki_content:
-            logger.error(f"Failed to fetch wiki content for page: {normalized_title}")
-            return False
+        if wiki_content == "":
+            logger.info(f"Page '{normalized_title}' is empty or not found. Creating new page with placeholder content.")
+            wiki_content = f"# {page_title}\n\nThis page is currently empty or was not found in the original wiki."
 
         html_content = wiki_api.convert_to_html(wiki_content)
         if not html_content:
@@ -40,7 +39,6 @@ def process_page(wiki_api, confluence_api, page_title, config, parent_id):
             logger.error(f"Failed to convert content to Markdown for page: {normalized_title}")
             return False
 
-        # Convert underscores back to spaces for the Confluence title
         confluence_title = normalized_title.replace('_', ' ')
 
         page_id = confluence_api.create_or_update_page(
@@ -54,6 +52,7 @@ def process_page(wiki_api, confluence_api, page_title, config, parent_id):
             logger.error(f"Failed to upload page to Confluence: {confluence_title}")
             return False
 
+        logger.info(f"Successfully processed page: {confluence_title}")
         return True
     except Exception as e:
         logger.error(f"Unexpected error processing page {normalized_title}: {str(e)}")
@@ -65,8 +64,16 @@ def main():
         
         verify_ssl = config.get('mediawiki', {}).get('verify_ssl', True)
         
-        wiki_api = WikiAPI(config['mediawiki']['api_url'], verify_ssl=verify_ssl)
-        page_collector = WikiPageCollector(config['mediawiki']['api_url'], verify_ssl=verify_ssl)
+        wiki_api = WikiAPI(
+            api_url=config['mediawiki']['api_url'],
+            wiki_url=config['mediawiki']['wiki_url'],
+            verify_ssl=verify_ssl
+        )
+        page_collector = WikiPageCollector(
+            api_url=config['mediawiki']['api_url'],
+            wiki_url=config['mediawiki']['wiki_url'],
+            verify_ssl=verify_ssl
+        )
         
         confluence_api = ConfluenceAPI(
             url=config['confluence']['url'],
@@ -82,17 +89,24 @@ def main():
             logger.error(f"Parent Wiki folder with ID {wiki_page_id} not found in Confluence. Please check your configuration.")
             sys.exit(1)
 
-        # Collect non-empty pages
-        non_empty_pages = page_collector.collect_non_empty_pages()
+        # Collect all pages, including empty ones
+        all_pages = page_collector.collect_all_pages()
         
-        # Save the list of pages to a text file
-        page_collector.save_pages_to_file(non_empty_pages, "wiki_pages.txt")
+        # Log the total number of pages
+        logger.info(f"Total number of pages to process: {len(all_pages)}")
         
-        # Process all non-empty pages
-        for page_title in non_empty_pages:
-            process_page(wiki_api, confluence_api, page_title, config, wiki_page_id)
+        # Process all pages
+        for page_title in all_pages:
+            success = process_page(wiki_api, confluence_api, page_title, config, wiki_page_id)
+            if not success:
+                page_collector.add_unprocessed_page(page_title)
 
-        logger.info("Wiki migration completed successfully.")
+        # Save the list of pages to a text file, including unprocessed pages
+        page_collector.save_pages_to_file(all_pages, "wiki_pages.txt")
+
+        logger.info(f"Wiki migration completed. Total pages processed: {len(all_pages) - len(page_collector.unprocessed_pages)}")
+        if page_collector.unprocessed_pages:
+            logger.info(f"Number of unprocessed pages: {len(page_collector.unprocessed_pages)}")
 
     except Exception as e:
         logger.error(f"An error occurred during migration: {str(e)}")
