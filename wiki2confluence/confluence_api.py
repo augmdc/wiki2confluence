@@ -5,6 +5,7 @@ import logging
 import time
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.ERROR)
 
 class ConfluenceAPI:
     def __init__(self, url, username, api_token, rate_limit=2):
@@ -73,14 +74,7 @@ class ConfluenceAPI:
                     return page['id']
                 except Exception as e:
                     error_message = str(e)
-                    if "No space or no content type" in error_message:
-                        logger.error(f"Error creating/updating page '{title}': No space or no content type specified")
-                    elif "setup a wrong version type set to content" in error_message:
-                        logger.error(f"Error creating/updating page '{title}': Wrong version type set for content")
-                    elif "status param is not draft and status content is current" in error_message:
-                        logger.error(f"Error creating/updating page '{title}': Status param conflict - not draft but content is current")
-                    else:
-                        logger.error(f"Error creating/updating page '{title}': {error_message}")
+                    logger.error(f"Error creating/updating page '{title}': {error_message}")
 
                     if attempt < max_retries - 1:
                         logger.warning(f"Attempt {attempt + 1} failed. Retrying in 5 seconds...")
@@ -92,23 +86,14 @@ class ConfluenceAPI:
             logger.error(f"Error creating or updating Confluence page '{title}': {e}")
             return None
 
-    def create_pages_in_wiki(self, space, structure, wiki_page_id):
-        for page in structure.pages:
-            self._create_page_with_structure(space, page, wiki_page_id)
-        return True
-
-    def _create_page_with_structure(self, space, page, parent_id):
-        if not page.content:
-            logger.warning(f"Skipping page '{page.title}' due to missing content")
-            return
-
-        page_id = self.create_or_update_page(
-            space=space,
-            title=page.title,
-            body=page.content,
-            parent_id=parent_id
-        )
-        
-        if page_id:
-            for child in page.children:
-                self._create_page_with_structure(space, child, page_id)
+    def verify_page_exists(self, page_id):
+        """
+        Verify if a page exists by its ID.
+        """
+        self.rate_limit_request()
+        try:
+            page = self.confluence.get_page_by_id(page_id)
+            return page is not None
+        except Exception as e:
+            logger.error(f"Error verifying page with ID '{page_id}': {e}")
+            return False

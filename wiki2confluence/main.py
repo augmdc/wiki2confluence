@@ -1,10 +1,8 @@
 import yaml
 import os
-import json
-import concurrent.futures
-import time
+import sys
 import logging
-from directory_mapper.mapper import DirectoryMapper
+from directory_mapper.wiki_page_collector import WikiPageCollector
 from wiki_api import WikiAPI
 from wiki_converter import WikiConverter
 from confluence_api import ConfluenceAPI
@@ -22,117 +20,83 @@ def load_config():
         logger.error(f"Failed to load config: {e}")
         raise
 
-def generate_wiki_structure_json(structure):
-    def page_to_dict(page):
-        return {
-            'title': page.title,
-            'children': [page_to_dict(child) for child in page.children]
-        }
-
-    return [page_to_dict(page) for page in structure.pages]
-
-def save_wiki_structure_json(structure):
-    json_structure = generate_wiki_structure_json(structure)
-    desktop_path = os.path.join(os.path.expanduser('~'), 'Desktop')
-    json_file_path = os.path.join(desktop_path, 'wiki_structure.json')
-    
-    with open(json_file_path, 'w') as f:
-        json.dump(json_structure, f, indent=2)
-    
-    logger.info(f"Wiki structure JSON saved to: {json_file_path}")
-
-def process_page(wiki_api, page):
+def process_page(wiki_api, confluence_api, page_title, config, parent_id):
     try:
-        wiki_content = wiki_api.get_wiki_content(page.title)
+        # Use the same normalization method for consistency
+        normalized_title = wiki_api.normalize_title(page_title)
+        
+        wiki_content = wiki_api.get_wiki_content(normalized_title)
         if not wiki_content:
-            return False, f"Failed to fetch wiki content"
+            logger.error(f"Failed to fetch wiki content for page: {normalized_title}")
+            return False
 
         html_content = wiki_api.convert_to_html(wiki_content)
         if not html_content:
-            return False, f"Failed to convert content to HTML"
+            logger.error(f"Failed to convert content to HTML for page: {normalized_title}")
+            return False
 
         markdown_content = WikiConverter.wiki_to_markdown(html_content)
         if not markdown_content:
-            return False, f"Failed to convert content to Markdown"
+            logger.error(f"Failed to convert content to Markdown for page: {normalized_title}")
+            return False
 
-        page.content = markdown_content
-        return True, None
+        # Convert underscores back to spaces for the Confluence title
+        confluence_title = normalized_title.replace('_', ' ')
+
+        page_id = confluence_api.create_or_update_page(
+            space=config['confluence']['space_key'],
+            title=confluence_title,
+            body=markdown_content,
+            parent_id=parent_id
+        )
+        
+        if not page_id:
+            logger.error(f"Failed to upload page to Confluence: {confluence_title}")
+            return False
+
+        return True
     except Exception as e:
-        return False, str(e)
+        logger.error(f"Unexpected error processing page {normalized_title}: {str(e)}")
+        return False
 
 def main():
     try:
-        logger.info("Starting wiki migration process")
         config = load_config()
         
         verify_ssl = config.get('mediawiki', {}).get('verify_ssl', True)
-        max_workers = config.get('general', {}).get('max_workers', 10)
         
         wiki_api = WikiAPI(config['mediawiki']['api_url'], verify_ssl=verify_ssl)
-        directory_mapper = DirectoryMapper(config['mediawiki']['api_url'], verify_ssl=verify_ssl)
-        
-        logger.info("Mapping wiki structure")
-        wiki_structure = directory_mapper.map_wiki_structure()
-        logger.info(f"Wiki structure mapped. Total pages: {len(wiki_structure.get_all_pages())}")
-        
-        save_wiki_structure_json(wiki_structure)
+        page_collector = WikiPageCollector(config['mediawiki']['api_url'], verify_ssl=verify_ssl)
         
         confluence_api = ConfluenceAPI(
             url=config['confluence']['url'],
             username=config['confluence']['username'],
             api_token=config['confluence']['api_token'],
-            rate_limit=2  # 2 requests per second
+            rate_limit=100
         )
         
-        logger.info("Converting wiki content to Markdown")
-        all_pages = wiki_structure.get_all_pages()
-        total_pages = len(all_pages)
-        processed_pages = 0
-        failed_pages = []
-
-        start_time = time.time()
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_page = {executor.submit(process_page, wiki_api, page): page for page in all_pages}
-            for future in concurrent.futures.as_completed(future_to_page):
-                page = future_to_page[future]
-                try:
-                    success, error_message = future.result()
-                    processed_pages += 1
-                    if not success:
-                        failed_pages.append((page.title, error_message))
-                        logger.error(f"Failed to process page: {page.title}. Error: {error_message}")
-                except Exception as exc:
-                    failed_pages.append((page.title, str(exc)))
-                    logger.error(f"Exception occurred while processing page: {page.title}. Error: {exc}")
-                
-                if processed_pages % 10 == 0 or processed_pages == total_pages:
-                    logger.info(f"Progress: {processed_pages}/{total_pages} pages processed")
-
-        logger.info("Creating/Updating pages in Confluence Wiki")
         wiki_page_id = config['confluence']['parent_page_id']
-        if not confluence_api.create_pages_in_wiki(
-            space=config['confluence']['space_key'],
-            structure=wiki_structure,
-            wiki_page_id=wiki_page_id
-        ):
-            logger.error("Failed to create/update pages in Confluence Wiki")
-            return
 
-        end_time = time.time()
+        # Verify the existence of the parent Wiki folder
+        if not confluence_api.verify_page_exists(wiki_page_id):
+            logger.error(f"Parent Wiki folder with ID {wiki_page_id} not found in Confluence. Please check your configuration.")
+            sys.exit(1)
+
+        # Collect non-empty pages
+        non_empty_pages = page_collector.collect_non_empty_pages()
         
-        logger.info(f"Wiki migration completed in {end_time - start_time:.2f} seconds")
-        logger.info(f"Total pages: {total_pages}")
-        logger.info(f"Successfully processed: {total_pages - len(failed_pages)}")
-        logger.info(f"Failed pages: {len(failed_pages)}")
+        # Save the list of pages to a text file
+        page_collector.save_pages_to_file(non_empty_pages, "wiki_pages.txt")
         
-        if failed_pages:
-            logger.error("The following pages failed to process:")
-            for page, error in failed_pages:
-                logger.error(f"- {page}: {error}")
+        # Process all non-empty pages
+        for page_title in non_empty_pages:
+            process_page(wiki_api, confluence_api, page_title, config, wiki_page_id)
+
+        logger.info("Wiki migration completed successfully.")
 
     except Exception as e:
         logger.error(f"An error occurred during migration: {str(e)}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

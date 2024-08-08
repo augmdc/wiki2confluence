@@ -1,28 +1,28 @@
 import requests
 import logging
-from .models import WikiStructure, WikiPage
+from wiki_api import WikiAPI
 
-class DirectoryMapper:
+class WikiPageCollector:
     def __init__(self, api_url, verify_ssl=True):
         self.api_url = api_url
         self.verify_ssl = verify_ssl
-        self.structure = WikiStructure()
         self.session = requests.Session()
+        self.wiki_api = WikiAPI(api_url, verify_ssl)
         if not verify_ssl:
             requests.packages.urllib3.disable_warnings()
         self.logger = logging.getLogger(__name__)
+        self.logger.setLevel(logging.ERROR)
 
-    def map_wiki_structure(self):
+    def collect_non_empty_pages(self):
         """
-        Map the entire wiki structure by fetching all pages.
+        Collect all non-empty pages from the wiki.
         """
         all_pages = self._get_all_pages()
+        non_empty_pages = []
         for page_title in all_pages:
-            try:
-                self._add_page_to_structure(page_title)
-            except Exception as e:
-                self.logger.error(f"Failed to add page {page_title} to structure: {str(e)}")
-        return self.structure
+            if not self.wiki_api.is_page_empty(page_title):
+                non_empty_pages.append(page_title)
+        return non_empty_pages
 
     def _get_all_pages(self):
         """
@@ -44,6 +44,7 @@ class DirectoryMapper:
                 data = response.json()
                 
                 for page in data['query']['allpages']:
+                    # Store the title with underscores
                     all_pages.append(page['title'])
                 
                 if 'continue' in data:
@@ -55,31 +56,15 @@ class DirectoryMapper:
                 break
         return all_pages
 
-    def _add_page_to_structure(self, page_title):
+    def save_pages_to_file(self, pages, filename):
         """
-        Add a page to the wiki structure.
+        Save the list of pages to a text file.
         """
-        if self.structure.get_page(page_title):
-            return  # Page already exists in structure
-
-        page = WikiPage(title=page_title)
-        parent_title = self._find_parent_title(page_title)
-        
-        if parent_title:
-            parent_page = self.structure.get_page(parent_title)
-            if not parent_page:
-                parent_page = self._add_page_to_structure(parent_title)
-            self.structure.add_page(page, parent_page)
-        else:
-            self.structure.add_page(page)
-        
-        return page
-
-    def _find_parent_title(self, page_title):
-        """
-        Find the parent title of a given page based on its title structure.
-        """
-        parts = page_title.split('/')
-        if len(parts) > 1:
-            return '/'.join(parts[:-1])
-        return None
+        try:
+            with open(filename, 'w', encoding='utf-8') as f:
+                for page in pages:
+                    # Write the underscore version of the title
+                    f.write(f"{page}\n")
+            self.logger.info(f"Page list saved to {filename}")
+        except IOError as e:
+            self.logger.error(f"Error saving page list to file: {e}")

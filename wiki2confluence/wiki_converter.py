@@ -26,10 +26,8 @@ class WikiConverter:
         
         markdown_content = []
         toc_items = []
-        original_toc_content = None
-
+        
         def process_element(element):
-            nonlocal original_toc_content
             if element.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
                 level = int(element.name[1])
                 title = WikiConverter.clean_title(element.get_text())
@@ -39,11 +37,10 @@ class WikiConverter:
             elif element.name == 'p':
                 return WikiConverter.process_paragraph(element)
             elif element.name == 'ul':
+                # Skip the original table of contents
+                if element.find('li', text=re.compile('contents', re.IGNORECASE)):
+                    return ""
                 content = ''.join(f"* {WikiConverter.process_list_item(li)}\n" for li in element.find_all('li', recursive=False)) + "\n"
-                # Check if this is likely the original TOC
-                if not original_toc_content and any("contents" in li.get_text().lower() for li in element.find_all('li')):
-                    original_toc_content = content
-                    return ""  # Skip this content
                 return content
             elif element.name == 'ol':
                 return ''.join(f"{i}. {WikiConverter.process_list_item(li)}\n" for i, li in enumerate(element.find_all('li', recursive=False), 1)) + "\n"

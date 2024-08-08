@@ -4,6 +4,7 @@ import re
 import logging
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.ERROR)
 
 class WikiAPI:
     def __init__(self, api_url, verify_ssl=True):
@@ -15,7 +16,8 @@ class WikiAPI:
 
     @staticmethod
     def normalize_title(title):
-        return re.sub(r'\s+', '_', title.strip())
+        # Convert spaces to underscores and remove any invalid characters
+        return re.sub(r'[^a-zA-Z0-9_]', '', title.replace(' ', '_'))
 
     @lru_cache(maxsize=1000)
     def get_wiki_content(self, page_title):
@@ -57,6 +59,7 @@ class WikiAPI:
             logger.error(f"Unexpected error fetching wiki content for '{normalized_title}': {e}")
         return None
 
+    # ... (rest of the methods remain unchanged)
 
     @lru_cache(maxsize=1000)
     def convert_to_html(self, wiki_content):
@@ -72,5 +75,14 @@ class WikiAPI:
             response.raise_for_status()
             return response.json()['parse']['text']['*']
         except Exception as e:
-            print(f"Error converting wiki to HTML: {e}")
+            logger.error(f"Error converting wiki to HTML: {e}")
             return None
+
+    def is_page_empty(self, page_title):
+        content = self.get_wiki_content(page_title)
+        if content is None:
+            return True
+        
+        # Remove whitespace and check if there's any content
+        cleaned_content = re.sub(r'\s+', '', content).strip()
+        return len(cleaned_content) == 0
